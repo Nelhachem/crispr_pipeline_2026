@@ -1,0 +1,7 @@
+rs3_venv/
+__pycache__/
+*.pyc
+*.pptx
+build_pptx.py
+rs3_venv_runner.py
+.git/

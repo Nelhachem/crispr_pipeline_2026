@@ -1,0 +1,309 @@
+================================================================================
+CRISPR DESIGN PIPELINE - COMMAND LINE EXAMPLES
+================================================================================
+
+Every command below has been run and verified. Two ways to invoke the tool:
+
+  LOCAL   python3 run_pipeline.py ...
+  DOCKER  docker run --rm -v "$(pwd):/data" crispr-pipeline:amd64 ...
+
+The Docker form mounts your current directory as /data inside the container,
+which is also the container's working directory, so you refer to your files by
+plain filename. Use the :arm64 image on an Apple Silicon Mac, :amd64 on Intel,
+AMD, Windows, and most Linux machines including Linux Mint.
+
+For brevity the examples use the LOCAL form. To convert any of them, replace
+"python3 run_pipeline.py" with the docker line above.
+
+One exception: score_guides.py (section 4) is not the container's default
+program, so in Docker it needs its own entrypoint and the /app/ path:
+
+  docker run --rm -v "$(pwd):/data" --entrypoint python3 \
+      crispr-pipeline:amd64 /app/score_guides.py my_locus.fa --guides ...
+
+
+================================================================================
+0. FIRST TIME SETUP
+================================================================================
+
+# Option A: load the prebuilt image someone sent you (no source needed)
+gunzip -c crispr-pipeline-amd64.tar.gz | docker load
+docker run --rm crispr-pipeline:amd64                 # confirms it works
+
+# Option B: build the image yourself from the source folder
+docker build -t crispr-pipeline .
+
+# Option C: run from source with no Docker at all. Works immediately, but
+# falls back to a heuristic on-target score unless you also set up rs3_venv
+# (see the "Real Rule Set 3" section of README.md).
+python3 run_pipeline.py
+
+
+================================================================================
+1. QUICK START
+================================================================================
+
+# Built-in demo on a small synthetic locus. Good smoke test.
+python3 run_pipeline.py
+
+# Two real human loci are bundled (real GRCh38 sequence from NCBI):
+python3 run_pipeline.py aavs1_locus.fa       # AAVS1 safe harbour, chr19
+python3 run_pipeline.py b2m_locus.fa         # B2M exon 1, chr15
+
+# Every available option
+python3 run_pipeline.py --help
+
+
+================================================================================
+2. KNOCK-IN  (insert cargo by HDR, get a donor sequence to order)
+================================================================================
+
+# 2a. Minimal. Uses a PLACEHOLDER cargo, so this is for exploring only.
+python3 run_pipeline.py my_locus.fa
+
+# 2b. Real cargo. Always do this for actual designs.
+python3 run_pipeline.py my_locus.fa \
+    --cargo-fasta my_cargo.fa \
+    --cargo-name EGFP
+
+# 2c. Larger homology arms for a larger insert. The default 40 bp suits
+#     small tags; a ~700 bp reporter wants a few hundred bp per side.
+python3 run_pipeline.py my_locus.fa \
+    --cargo-fasta my_cargo.fa --cargo-name EGFP \
+    --arm-len 500
+
+# 2d. Full production run: real cargo, large arms, screened against the
+#     surrounding genomic neighbourhood, more candidates examined.
+python3 run_pipeline.py my_locus.fa \
+    --cargo-fasta my_cargo.fa --cargo-name EGFP \
+    --arm-len 500 \
+    --reference flanking_panel.fa \
+    --screen-n 20 \
+    --top-n 5
+
+# 2e. The complete worked example that ships with the tool. Inserts a real
+#     720 bp EGFP CDS into AAVS1. Run it from the example_knockin folder.
+cd example_knockin
+python3 ../run_pipeline.py aavs1_target_2kb.fa \
+    --cargo-fasta egfp_cargo.fa --cargo-name EGFP \
+    --arm-len 500 \
+    --reference chr19_flanking_panel.fa \
+    --screen-n 20
+
+# Expected tail of that run:
+#   Donor length: 1720 bp        (500 bp arm + 720 bp EGFP + 500 bp arm)
+#   RESULT: ALL CHECKS PASSED
+
+
+================================================================================
+3. KNOCK-OUT  (disrupt the gene by NHEJ frameshift, no donor)
+================================================================================
+
+Knock-out ranking rewards cuts in roughly the first 5 to 60 percent of the
+coding sequence. That is far enough in that translation cannot restart at a
+downstream ATG, and early enough that a frameshift truncates most of the
+protein. So the tool has to be told where the CDS actually is.
+
+All CDS offsets are 0-based positions WITHIN YOUR FASTA, not genome
+coordinates.
+
+# 3a. Knock-out with the coding sequence declared. This is the real B2M
+#     example: exon 1 coding region sits at offsets 70-137 of the bundled
+#     window, and the full B2M CDS is 360 bp across all three exons.
+python3 run_pipeline.py b2m_locus.fa --mode knockout \
+    --cds-start 70 --cds-end 137 \
+    --cds-total-len 360
+
+# Expected: the real published B2M guide ranks #1 and reports
+#   Position in CDS      : 6.1% (coding base 22 of 360)
+#   RESULT: ALL CHECKS PASSED
+
+# 3b. Same thing with an off-target panel, as you would for real work.
+python3 run_pipeline.py b2m_locus.fa --mode knockout \
+    --cds-start 70 --cds-end 137 --cds-total-len 360 \
+    --reference flanking_panel.fa --screen-n 20
+
+# 3c. If your FASTA holds a LATER exon, say how many coding bases come
+#     before it, so the position is measured against the whole CDS.
+python3 run_pipeline.py exon3.fa --mode knockout \
+    --cds-start 100 --cds-end 240 \
+    --cds-upstream-bp 346 \
+    --cds-total-len 360
+
+# 3d. Knock-out without declaring a CDS. This RUNS but is much weaker: it
+#     cannot rank by position and cannot reject guides landing in an intron
+#     or UTR. The tool prints a warning saying exactly that.
+python3 run_pipeline.py b2m_locus.fa --mode knockout
+
+
+================================================================================
+4. SCORING A SHORTLIST FROM CHOPCHOP OR CRISPOR
+================================================================================
+
+This tool has no genome index, so it cannot do genome-wide off-target search.
+The recommended workflow is to search genome-wide first, then bring the
+survivors here for the newer on-target model and the donor design.
+
+  Step 1  CHOPCHOP (chopchop.cbu.uib.no) or CRISPOR (crispor.gi.ucsc.edu).
+          Enter your gene or coordinates, run it, discard guides with a
+          perfect match elsewhere in the genome or many 1-2 mismatch hits,
+          then export the table.
+  Step 2  Fetch the same region as FASTA (see section 5).
+  Step 3  Score the shortlist with the commands below.
+
+# 4a. Score an exported CHOPCHOP or CRISPOR table directly. The guide column
+#     is found automatically, and a 23 nt entry has its PAM trimmed for you.
+python3 score_guides.py my_locus.fa \
+    --guides-file chopchop_results.tsv \
+    --reference flanking_panel.fa
+
+# 4b. Score sequences typed in by hand. 20 nt or 23 nt both accepted.
+python3 score_guides.py my_locus.fa \
+    --guides AGAGCTAGCACAGACTAGAG GAGATGGCTCCAGGAAATGG
+
+# 4c. Score a plain list, one protospacer per line, '#' lines ignored.
+python3 score_guides.py my_locus.fa --guides-file my_guides.txt
+
+# 4d. Score, then build the donor for the guide you picked.
+python3 score_guides.py my_locus.fa \
+    --guides-file chopchop_results.tsv \
+    --reference flanking_panel.fa \
+    --build-donor AGAGCTAGCACAGACTAGAG \
+    --cargo-fasta egfp_cargo.fa --cargo-name EGFP --arm-len 500
+
+# 4e. The bundled demo of this, using a CHOPCHOP-format table.
+cd example_knockin
+python3 ../score_guides.py aavs1_target_2kb.fa \
+    --guides-file chopchop_shortlist.tsv \
+    --reference chr19_flanking_panel.fa
+
+# How to weigh the resulting columns:
+#   MM0-MM3 (from CHOPCHOP/CRISPOR)  is it unique in the genome? Nothing
+#                                    here can tell you this. A bad MM0 or
+#                                    MM1 is disqualifying.
+#   RS3                              predicted activity, 2022 Doench model.
+#                                    Primary ranking among survivors.
+#   CFD-spec                         local off-target risk, 0-100, higher
+#                                    is cleaner. Good for breaking ties.
+# The tools will often disagree on ranking. That is informative, not a fault.
+
+
+================================================================================
+5. GETTING YOUR INPUT FILES
+================================================================================
+
+# 5a. Find a gene's NCBI ID (example: B2M). Note the square brackets must be
+#     URL-encoded as %5B and %5D, or the query silently returns nothing.
+curl -s "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=gene&term=B2M%5Bgene%5D+AND+human%5Borgn%5D&retmode=json"
+
+# 5b. Get its exact coordinates and RefSeq accession (gene ID 567 = B2M)
+curl -s "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=gene&id=567&retmode=json"
+
+# 5c. Download that region as FASTA
+curl -s "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=nuccore&id=NC_000015.10&rettype=fasta&retmode=text&seq_start=44711477&seq_stop=44711653" -o my_locus.fa
+
+# 5d. Get the exon table, which is how you find your CDS offsets for a
+#     knock-out. Subtract your window's start coordinate from the coding
+#     start and end to convert genome coordinates into FASTA offsets.
+curl -s "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=gene&id=567&rettype=gene_table&retmode=text"
+
+# 5e. Build an off-target panel from the regions FLANKING your target, never
+#     spanning it (see mistake 1 below). Two fetches, concatenated into one
+#     multi-record FASTA. This is the exact panel used by the worked example,
+#     for a target at chr19:55,115,000-55,117,000.
+NC=NC_000019.10
+EU=https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi
+curl -s "$EU?db=nuccore&id=$NC&rettype=fasta&retmode=text&seq_start=55015000&seq_stop=55114999" -o _upstream.fa
+curl -s "$EU?db=nuccore&id=$NC&rettype=fasta&retmode=text&seq_start=55117001&seq_stop=55215000" -o _downstream.fa
+cat _upstream.fa _downstream.fa > flanking_panel.fa
+rm _upstream.fa _downstream.fa
+
+
+================================================================================
+6. TWO MISTAKES WORTH AVOIDING
+================================================================================
+
+MISTAKE 1: putting your target region inside your reference panel.
+
+  If the panel overlaps the target, each guide's own on-target site is found
+  a second time inside a --reference file and counted as a perfect
+  off-target. Every candidate then fails the gate.
+
+  Symptom:  every guide shows exact-OT 1, and the run ends
+            "RESULT: SOME CHECKS FAILED"
+  Fix:      build the panel from flanking regions only, as in 5e above.
+
+  Real numbers from the bundled example:
+            contaminated panel   exact-OT 1,  CFD-spec 43.3,  FAILED
+            correct panel        exact-OT 0,  CFD-spec 76.2,  PASSED
+
+  To see this for yourself:
+    cd example_knockin
+    python3 ../run_pipeline.py aavs1_target_2kb.fa \
+        --cargo-fasta egfp_cargo.fa --arm-len 500 \
+        --reference chr19_BAD_contains_target_200kb.fa
+
+MISTAKE 2: a FASTA too small for the homology arms you asked for.
+
+  A guide is only usable if its cut sits at least --arm-len away from both
+  ends of your input. Ask for 500 bp arms in a 1 kb window and almost every
+  candidate is discarded.
+
+  Symptom:  "Dropped N guide(s) too close to the sequence ends"
+            with N close to the total, or "No guide leaves room for ..."
+  Rule:     input length should be at least 2 x --arm-len plus a few
+            hundred bp of working room.
+  Example:  the worked example uses 500 bp arms in a 2001 bp window and
+            still discards 195 of 427 candidates. That is normal.
+
+
+================================================================================
+7. OPTION REFERENCE
+================================================================================
+
+MODE
+  --mode knockin            insert cargo by HDR, build a donor  (default)
+  --mode knockout           disrupt the gene by NHEJ, no donor
+
+KNOCK-IN
+  --cargo-fasta FILE        sequence to insert, used verbatim
+  --cargo-name NAME         label shown in the donor feature map
+  --arm-len N               homology arm length per side       (default 40)
+
+KNOCK-OUT   (offsets are positions within your FASTA, not genome coordinates)
+  --cds-start N             where the coding sequence starts
+  --cds-end N               where it ends, end-exclusive
+  --cds-upstream-bp N       coding bases before this window     (default 0)
+  --cds-total-len N         full CDS length across all exons
+
+OFF-TARGET SCREENING
+  --reference FILE...       extra FASTA files to screen against
+  --screen-n N              candidates given the full screen    (default 15)
+  --max-mismatches N        mismatch ceiling for a hit          (default 6)
+  --seed-len N              PAM-proximal seed length            (default 12)
+  --allow-exact-repeats     keep guides with a perfect off-target (diagnostic)
+  --fast-index-threshold BP switch to indexed scanning above this size
+
+DISPLAY
+  --top-n N                 rows printed in the ranking table   (default 5)
+
+Lowering --max-mismatches below 6 is not recommended. A real, published,
+sequencing-confirmed off-target in the validation set has 5 mismatches and
+becomes invisible at 4.
+
+
+================================================================================
+8. CHECKING THE INSTALL
+================================================================================
+
+# Each module self-tests when run directly. All of these should pass.
+python3 sgrna_design.py          # strand and cut-site geometry
+python3 cfd_score.py             # real CFD tables vs known reference values
+python3 offtarget.py             # off-target search and scoring
+python3 validate_iguide.py       # reproduces a real published off-target site
+python3 rule_set_3.py            # real Rule Set 3 bridge, if installed
+python3 validate_rule_set_3.py   # real model ranks 2 published guides #1
+python3 knockin_donor.py         # donor assembly
+python3 hdr_donor.py             # point-edit donor and PAM block
+
+# In Docker these all ran at image build time. If the image built, they passed.

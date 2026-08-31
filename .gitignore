@@ -1,0 +1,37 @@
+# Machine-specific build artefact: ~438 MB of compiled LightGBM/scikit-learn
+# binaries tied to this exact Mac. Never portable, never useful to anyone else.
+# Rebuild it with the three commands in README.md, or just use Docker.
+rs3_venv/
+
+# Exported Docker images. Each is ~210-225 MB, well over GitHub's 100 MB
+# per-file hard limit, so these cannot be pushed without Git LFS anyway.
+# Rebuild them from the Dockerfile: `docker build -t crispr-pipeline .`
+*.tar.gz
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+
+# Large reference panels fetched from NCBI. Regenerate with the commands in
+# EXAMPLES.txt section 5, rather than versioning hundreds of kb of sequence.
+example_knockin/chr19_flanking_panel.fa
+example_knockin/chr19_BAD_contains_target_200kb.fa
+
+# Local Claude Code tool permissions. Contains absolute paths from this
+# machine and references to unrelated projects. Not part of the toolkit.
+.claude/
+
+# --- kept local, deliberately not in this repo ---
+# Slide decks and the scripts that generate them
+*.pptx
+build_pptx.py
+build_usage_deck.py
+build_methods_reference.py
+build_function_reference.py
+# Worked-example folder (regenerate with EXAMPLES.txt section 5)
+example_knockin/
+# Stray test input
+geneLDHA.fa
