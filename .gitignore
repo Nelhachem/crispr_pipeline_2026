@@ -15,11 +15,6 @@ __pycache__/
 # macOS
 .DS_Store
 
-# Large reference panels fetched from NCBI. Regenerate with the commands in
-# EXAMPLES.txt section 5, rather than versioning hundreds of kb of sequence.
-example_knockin/chr19_flanking_panel.fa
-example_knockin/chr19_BAD_contains_target_200kb.fa
-
 # Local Claude Code tool permissions. Contains absolute paths from this
 # machine and references to unrelated projects. Not part of the toolkit.
 .claude/
@@ -31,7 +26,5 @@ build_pptx.py
 build_usage_deck.py
 build_methods_reference.py
 build_function_reference.py
-# Worked-example folder (regenerate with EXAMPLES.txt section 5)
-example_knockin/
 # Stray test input
 geneLDHA.fa
